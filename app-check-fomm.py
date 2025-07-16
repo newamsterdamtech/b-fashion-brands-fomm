@@ -29,7 +29,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.title("B Fashion Brands - Fomm Excel Processing")
+st.title("B Fashion Brands Fomm Bestanden")
 
 uploaded_files = st.file_uploader(
     "Upload multiple Excel files", type=["xlsx"], accept_multiple_files=True
