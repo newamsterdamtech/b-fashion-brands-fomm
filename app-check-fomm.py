@@ -31,9 +31,8 @@ st.markdown(
 
 st.title("B Fashion Brands Fomm Bestanden")
 
-
 uploaded_files = st.file_uploader(
-    "Upload multiple Excel files", type=["xlsx"], accept_multiple_files=True
+    "Upload multiple Excel files", type=["xlsx", "xls"], accept_multiple_files=True
 )
 
 def parse_percentage(val):
@@ -67,10 +66,10 @@ def clean_ean(val):
 
 def get_header_mapping(columns):
     mapping = {}
-    colmap = {re.sub(r'\W+', '', col).upper(): col for col in columns}
+    colmap = {re.sub(r'\W+', '', str(col)).upper(): col for col in columns}
     possible_cols = {
         "PO": ["PO"],
-        "EAN CODES": ["EAN CODES", "Ean Codes"],
+        "EAN CODES": ["EAN CODES", "Ean Codes", "EAN"],
         "PACKED": ["PACKED"],
         "ORDERED": ["ORDERED"],
         "PERCENTAGE": ["PERCENTAGE", "RATIO"],
@@ -82,6 +81,16 @@ def get_header_mapping(columns):
                 mapping[canon] = colmap[key]
                 break
     return mapping
+
+def preprocess_excel_file_ean_codes(file):
+    # Only loads the EAN Codes sheet as dataframe
+    try:
+        df = pd.read_excel(file, sheet_name='EAN Codes')
+        df.dropna(how='all', inplace=True)
+        df.columns = df.columns.str.strip()
+        return {"EAN Codes": df}
+    except Exception as e:
+        return {}
 
 def improved_preprocess_excel_file(file):
     xls = pd.ExcelFile(file)
@@ -104,11 +113,17 @@ if uploaded_files:
     final_data = []
     deviations_data = []
     for uploaded_file in uploaded_files:
-        sheets_data = improved_preprocess_excel_file(uploaded_file)
+        # Check if EAN Codes sheet exists
+        xls = pd.ExcelFile(uploaded_file)
+        if 'EAN Codes' in xls.sheet_names:
+            sheets_data = preprocess_excel_file_ean_codes(uploaded_file)
+        else:
+            sheets_data = improved_preprocess_excel_file(uploaded_file)
+
         for df in sheets_data.values():
             header_map = get_header_mapping(df.columns)
 
-            # Handle classic PO/EAN/PACKED
+            # Classic PO/EAN/PACKED
             if {"PO", "EAN CODES", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
@@ -129,7 +144,7 @@ if uploaded_files:
                 })
                 final_data.append(df_filtered)
 
-            # Handle new format with ORDERED as well
+            # New format with ORDERED
             elif {"PO", "EAN CODES", "ORDERED", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
