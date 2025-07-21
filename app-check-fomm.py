@@ -108,7 +108,6 @@ if uploaded_files:
             header_map = get_header_mapping(df.columns)
             # --- Handle PO/EAN/PACKED format ---
             if {"PO", "EAN CODES", "PACKED"}.issubset(header_map):
-                # Use canonical names mapped to actual columns
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
                 packed_col = header_map["PACKED"]
@@ -117,6 +116,7 @@ if uploaded_files:
                     pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
                     pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
                 ]
+                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)   # <--- Here!
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
                 df_filtered = df_filtered[df_filtered[packed_col] != 0]
@@ -127,7 +127,7 @@ if uploaded_files:
                     packed_col: "PACKED"
                 })
                 final_data.append(df_filtered)
-            # --- Handle ORDERED/EAN/PACKED/PO/Brand etc (your new example file) ---
+
             elif {"PO", "EAN CODES", "ORDERED", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
@@ -138,6 +138,7 @@ if uploaded_files:
                     pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
                     pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
                 ]
+                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)   # <--- Here!
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[ordered_col] = df_filtered[ordered_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
@@ -150,6 +151,7 @@ if uploaded_files:
                     packed_col: "PACKED"
                 })
                 final_data.append(df_filtered)
+
             # --- Deviations (handle PERCENTAGE or RATIO columns) ---
             percent_col = header_map.get("PERCENTAGE")
             if percent_col:
