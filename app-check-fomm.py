@@ -31,12 +31,12 @@ st.markdown(
 
 st.title("B Fashion Brands Fomm Bestanden")
 
+
 uploaded_files = st.file_uploader(
     "Upload multiple Excel files", type=["xlsx"], accept_multiple_files=True
 )
 
 def parse_percentage(val):
-    """Converts string percentage to float (e.g. '-14,29%' -> -0.1429). Handles comma and dot decimals."""
     if pd.isnull(val):
         return None
     if isinstance(val, (float, int)):
@@ -48,7 +48,6 @@ def parse_percentage(val):
         return None
 
 def format_percentage(val):
-    """Formats a float like -0.142857 to '-14,29%' with comma as decimal and two decimals."""
     if pd.isnull(val):
         return ""
     try:
@@ -58,12 +57,15 @@ def format_percentage(val):
     except Exception:
         return ""
 
+def clean_ean(val):
+    if pd.isnull(val):
+        return ""
+    s = str(val)
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s.strip()
+
 def get_header_mapping(columns):
-    """
-    Maps possible column names (flexible on case/spacing) to standard output.
-    Returns a dict: canonical_name -> actual_col_name_in_df
-    """
-    # Map "canonical" column names to all possible variations
     mapping = {}
     colmap = {re.sub(r'\W+', '', col).upper(): col for col in columns}
     possible_cols = {
@@ -87,7 +89,6 @@ def improved_preprocess_excel_file(file):
     for sheet_name in xls.sheet_names:
         df_raw = xls.parse(sheet_name, header=None)
         df_raw.dropna(how='all', inplace=True)
-        # Heuristic: look for header row (contains "EAN CODES" or "Ean Codes" etc)
         possible_header_rows = df_raw.apply(
             lambda row: row.astype(str).str.contains('EAN', case=False, na=False).any(), axis=1
         )
@@ -106,18 +107,21 @@ if uploaded_files:
         sheets_data = improved_preprocess_excel_file(uploaded_file)
         for df in sheets_data.values():
             header_map = get_header_mapping(df.columns)
-            # --- Main output ---
+
+            # Handle classic PO/EAN/PACKED
             if {"PO", "EAN CODES", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
                 packed_col = header_map["PACKED"]
                 df_filtered = df[[po_col, ean_col, packed_col]].copy()
-                # Exclude rows where PO is empty/NaN/not numeric
+                # Exclude rows with no valid PO
                 df_filtered = df_filtered[pd.to_numeric(df_filtered[po_col], errors='coerce').notnull()]
                 df_filtered[packed_col] = df_filtered[packed_col].fillna(0)
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
                 df_filtered = df_filtered[df_filtered[packed_col] != 0]
+                # Clean EAN codes
+                df_filtered[ean_col] = df_filtered[ean_col].apply(clean_ean)
                 df_filtered = df_filtered.rename(columns={
                     po_col: "PO",
                     ean_col: "EAN CODES",
@@ -125,19 +129,22 @@ if uploaded_files:
                 })
                 final_data.append(df_filtered)
 
+            # Handle new format with ORDERED as well
             elif {"PO", "EAN CODES", "ORDERED", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
                 packed_col = header_map["PACKED"]
                 ordered_col = header_map["ORDERED"]
                 df_filtered = df[[po_col, ean_col, ordered_col, packed_col]].copy()
-                # Exclude rows where PO is empty/NaN/not numeric
+                # Exclude rows with no valid PO
                 df_filtered = df_filtered[pd.to_numeric(df_filtered[po_col], errors='coerce').notnull()]
                 df_filtered[packed_col] = df_filtered[packed_col].fillna(0)
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[ordered_col] = df_filtered[ordered_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
                 df_filtered = df_filtered[df_filtered[packed_col] != 0]
+                # Clean EAN codes
+                df_filtered[ean_col] = df_filtered[ean_col].apply(clean_ean)
                 df_filtered = df_filtered.rename(columns={
                     po_col: "PO",
                     ean_col: "EAN CODES",
@@ -146,12 +153,12 @@ if uploaded_files:
                 })
                 final_data.append(df_filtered)
 
-            # --- Deviations output ---
+            # Deviations (PERCENTAGE/RATIO)
             percent_col = header_map.get("PERCENTAGE")
             if percent_col and "PO" in header_map:
                 po_col = header_map["PO"]
                 df_copy = df.copy()
-                # Exclude rows where PO is empty/NaN/not numeric
+                # Exclude rows with no valid PO
                 df_copy = df_copy[pd.to_numeric(df_copy[po_col], errors='coerce').notnull()]
                 df_copy['__percent'] = df_copy[percent_col].map(parse_percentage)
                 deviations = df_copy[df_copy['__percent'] <= -0.05]
@@ -159,12 +166,11 @@ if uploaded_files:
                     deviations[percent_col] = deviations['__percent'].map(format_percentage)
                     deviations_data.append(deviations.drop(columns='__percent', errors='ignore'))
 
-
-    # Show PO/EAN CODES/PACKED(/ORDERED) table preview and download
+    # Show processed data preview and download
     if final_data:
         final_output_data = pd.concat(final_data, ignore_index=True)
         st.subheader("Processed Data")
-        st.write(final_output_data.head())
+        st.write(final_output_data.head(50))
         output = BytesIO()
         final_output_data.to_csv(output, index=False)
         output.seek(0)
@@ -177,7 +183,7 @@ if uploaded_files:
     else:
         st.warning("No valid data found in uploaded files.")
 
-    # Show deviation rows preview
+    # Show deviations data preview and download
     if deviations_data:
         deviations_output = pd.concat(deviations_data, ignore_index=True)
         st.subheader("Rows with Deviations (PERCENTAGE < -5%)")
