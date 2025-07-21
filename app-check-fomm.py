@@ -116,7 +116,7 @@ if uploaded_files:
             ean_col = header_map.get("EAN CODES")
             packed_col = header_map.get("PACKED")
             po_col = header_map.get("PO")
-            ordered_col = header_map.get("ORDERED")
+            #ordered_col = header_map.get("ORDERED")
 
             columns_to_use = []
             if po_col: columns_to_use.append(po_col)
