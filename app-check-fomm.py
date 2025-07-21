@@ -106,21 +106,18 @@ if uploaded_files:
         sheets_data = improved_preprocess_excel_file(uploaded_file)
         for df in sheets_data.values():
             header_map = get_header_mapping(df.columns)
-            # --- Handle PO/EAN/PACKED format ---
+            # --- Main output ---
             if {"PO", "EAN CODES", "PACKED"}.issubset(header_map):
                 po_col = header_map["PO"]
                 ean_col = header_map["EAN CODES"]
                 packed_col = header_map["PACKED"]
                 df_filtered = df[[po_col, ean_col, packed_col]].copy()
-                df_filtered = df_filtered[
-                    pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
-                    pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
-                ]
-                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)   # <--- Here!
+                # Exclude rows where PO is empty/NaN/not numeric
+                df_filtered = df_filtered[pd.to_numeric(df_filtered[po_col], errors='coerce').notnull()]
+                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
                 df_filtered = df_filtered[df_filtered[packed_col] != 0]
-                # Rename columns for consistency
                 df_filtered = df_filtered.rename(columns={
                     po_col: "PO",
                     ean_col: "EAN CODES",
@@ -134,16 +131,13 @@ if uploaded_files:
                 packed_col = header_map["PACKED"]
                 ordered_col = header_map["ORDERED"]
                 df_filtered = df[[po_col, ean_col, ordered_col, packed_col]].copy()
-                df_filtered = df_filtered[
-                    pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
-                    pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
-                ]
-                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)   # <--- Here!
+                # Exclude rows where PO is empty/NaN/not numeric
+                df_filtered = df_filtered[pd.to_numeric(df_filtered[po_col], errors='coerce').notnull()]
+                df_filtered[packed_col] = df_filtered[packed_col].fillna(0)
                 df_filtered[po_col] = df_filtered[po_col].astype(int)
                 df_filtered[ordered_col] = df_filtered[ordered_col].astype(int)
                 df_filtered[packed_col] = df_filtered[packed_col].astype(int)
                 df_filtered = df_filtered[df_filtered[packed_col] != 0]
-                # Rename columns for consistency
                 df_filtered = df_filtered.rename(columns={
                     po_col: "PO",
                     ean_col: "EAN CODES",
@@ -152,15 +146,19 @@ if uploaded_files:
                 })
                 final_data.append(df_filtered)
 
-            # --- Deviations (handle PERCENTAGE or RATIO columns) ---
+            # --- Deviations output ---
             percent_col = header_map.get("PERCENTAGE")
-            if percent_col:
+            if percent_col and "PO" in header_map:
+                po_col = header_map["PO"]
                 df_copy = df.copy()
+                # Exclude rows where PO is empty/NaN/not numeric
+                df_copy = df_copy[pd.to_numeric(df_copy[po_col], errors='coerce').notnull()]
                 df_copy['__percent'] = df_copy[percent_col].map(parse_percentage)
                 deviations = df_copy[df_copy['__percent'] <= -0.05]
                 if not deviations.empty:
                     deviations[percent_col] = deviations['__percent'].map(format_percentage)
                     deviations_data.append(deviations.drop(columns='__percent', errors='ignore'))
+
 
     # Show PO/EAN CODES/PACKED(/ORDERED) table preview and download
     if final_data:
