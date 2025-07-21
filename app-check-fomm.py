@@ -53,11 +53,33 @@ def format_percentage(val):
         return ""
     try:
         percentage = float(val) * 100
-        # Use round and format, then replace decimal dot with comma
         formatted = f"{percentage:.2f}".replace('.', ',') + '%'
         return formatted
     except Exception:
         return ""
+
+def get_header_mapping(columns):
+    """
+    Maps possible column names (flexible on case/spacing) to standard output.
+    Returns a dict: canonical_name -> actual_col_name_in_df
+    """
+    # Map "canonical" column names to all possible variations
+    mapping = {}
+    colmap = {re.sub(r'\W+', '', col).upper(): col for col in columns}
+    possible_cols = {
+        "PO": ["PO"],
+        "EAN CODES": ["EAN CODES", "Ean Codes"],
+        "PACKED": ["PACKED"],
+        "ORDERED": ["ORDERED"],
+        "PERCENTAGE": ["PERCENTAGE", "RATIO"],
+    }
+    for canon, variants in possible_cols.items():
+        for var in variants:
+            key = re.sub(r'\W+', '', var).upper()
+            if key in colmap:
+                mapping[canon] = colmap[key]
+                break
+    return mapping
 
 def improved_preprocess_excel_file(file):
     xls = pd.ExcelFile(file)
@@ -65,8 +87,9 @@ def improved_preprocess_excel_file(file):
     for sheet_name in xls.sheet_names:
         df_raw = xls.parse(sheet_name, header=None)
         df_raw.dropna(how='all', inplace=True)
+        # Heuristic: look for header row (contains "EAN CODES" or "Ean Codes" etc)
         possible_header_rows = df_raw.apply(
-            lambda row: row.astype(str).str.contains('EAN CODES', case=False, na=False).any(), axis=1
+            lambda row: row.astype(str).str.contains('EAN', case=False, na=False).any(), axis=1
         )
         if possible_header_rows.any():
             header_row_idx = possible_header_rows.idxmax()
@@ -82,32 +105,65 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         sheets_data = improved_preprocess_excel_file(uploaded_file)
         for df in sheets_data.values():
-            # First output: Only PO, EAN CODES, PACKED
-            if {'PO', 'EAN CODES', 'PACKED'}.issubset(df.columns):
-                df_filtered = df[['PO', 'EAN CODES', 'PACKED']].copy()
-                df_filtered = df_filtered[pd.to_numeric(df_filtered['PO'], errors='coerce').notnull()]
-                df_filtered = df_filtered[pd.to_numeric(df_filtered['PACKED'], errors='coerce').notnull()]
-                df_filtered['PO'] = df_filtered['PO'].astype(int)
-                df_filtered['PACKED'] = df_filtered['PACKED'].astype(int)
-                df_filtered = df_filtered[df_filtered['PACKED'] != 0]
+            header_map = get_header_mapping(df.columns)
+            # --- Handle PO/EAN/PACKED format ---
+            if {"PO", "EAN CODES", "PACKED"}.issubset(header_map):
+                # Use canonical names mapped to actual columns
+                po_col = header_map["PO"]
+                ean_col = header_map["EAN CODES"]
+                packed_col = header_map["PACKED"]
+                df_filtered = df[[po_col, ean_col, packed_col]].copy()
+                df_filtered = df_filtered[
+                    pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
+                    pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
+                ]
+                df_filtered[po_col] = df_filtered[po_col].astype(int)
+                df_filtered[packed_col] = df_filtered[packed_col].astype(int)
+                df_filtered = df_filtered[df_filtered[packed_col] != 0]
+                # Rename columns for consistency
+                df_filtered = df_filtered.rename(columns={
+                    po_col: "PO",
+                    ean_col: "EAN CODES",
+                    packed_col: "PACKED"
+                })
                 final_data.append(df_filtered)
-
-            # Second output: Any row where 'PERCENTAGE' < -0.05
-            # Find column name, case-insensitive match for 'PERCENTAGE'
-            percent_col = next((col for col in df.columns if re.sub(r'\s+', '', col).upper() == 'PERCENTAGE'), None)
+            # --- Handle ORDERED/EAN/PACKED/PO/Brand etc (your new example file) ---
+            elif {"PO", "EAN CODES", "ORDERED", "PACKED"}.issubset(header_map):
+                po_col = header_map["PO"]
+                ean_col = header_map["EAN CODES"]
+                packed_col = header_map["PACKED"]
+                ordered_col = header_map["ORDERED"]
+                df_filtered = df[[po_col, ean_col, ordered_col, packed_col]].copy()
+                df_filtered = df_filtered[
+                    pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
+                    pd.to_numeric(df_filtered[packed_col], errors='coerce').notnull()
+                ]
+                df_filtered[po_col] = df_filtered[po_col].astype(int)
+                df_filtered[ordered_col] = df_filtered[ordered_col].astype(int)
+                df_filtered[packed_col] = df_filtered[packed_col].astype(int)
+                df_filtered = df_filtered[df_filtered[packed_col] != 0]
+                # Rename columns for consistency
+                df_filtered = df_filtered.rename(columns={
+                    po_col: "PO",
+                    ean_col: "EAN CODES",
+                    ordered_col: "ORDERED",
+                    packed_col: "PACKED"
+                })
+                final_data.append(df_filtered)
+            # --- Deviations (handle PERCENTAGE or RATIO columns) ---
+            percent_col = header_map.get("PERCENTAGE")
             if percent_col:
                 df_copy = df.copy()
                 df_copy['__percent'] = df_copy[percent_col].map(parse_percentage)
-                deviations = df_copy[df_copy['__percent'] <= -0.05]  # -5%
+                deviations = df_copy[df_copy['__percent'] <= -0.05]
                 if not deviations.empty:
-                    # Format the percentage column for display/export
                     deviations[percent_col] = deviations['__percent'].map(format_percentage)
                     deviations_data.append(deviations.drop(columns='__percent', errors='ignore'))
 
-    # Show PO/EAN CODES/PACKED table preview and download
+    # Show PO/EAN CODES/PACKED(/ORDERED) table preview and download
     if final_data:
         final_output_data = pd.concat(final_data, ignore_index=True)
-        st.subheader("Processed Data (PO, EAN CODES, PACKED)")
+        st.subheader("Processed Data")
         st.write(final_output_data.head())
         output = BytesIO()
         final_output_data.to_csv(output, index=False)
@@ -119,13 +175,13 @@ if uploaded_files:
             mime="text/csv"
         )
     else:
-        st.warning("No valid PO/EAN CODES/PACKED data found in uploaded files.")
+        st.warning("No valid data found in uploaded files.")
 
     # Show deviation rows preview
     if deviations_data:
         deviations_output = pd.concat(deviations_data, ignore_index=True)
         st.subheader("Rows with Deviations (PERCENTAGE < -5%)")
-        st.write(deviations_output.head(50))  # Show up to 50 rows for preview
+        st.write(deviations_output.head(50))
         deviations_csv = BytesIO()
         deviations_output.to_csv(deviations_csv, index=False)
         deviations_csv.seek(0)
@@ -136,4 +192,4 @@ if uploaded_files:
             mime="text/csv"
         )
     else:
-        st.info("No rows with PERCENTAGE below -5% found.")
+        st.info("No rows with PERCENTAGE/RATIO below -5% found.")
