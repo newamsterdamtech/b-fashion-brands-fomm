@@ -121,7 +121,6 @@ if uploaded_files:
             columns_to_use = []
             if po_col: columns_to_use.append(po_col)
             if ean_col: columns_to_use.append(ean_col)
-            #if ordered_col: columns_to_use.append(ordered_col)
             if packed_col: columns_to_use.append(packed_col)
 
             # Only process if we have at least EAN and PACKED
@@ -150,7 +149,7 @@ if uploaded_files:
                 if po_col:
                     df_copy = df_copy[pd.to_numeric(df_copy[po_col], errors='coerce').notnull()]
                 df_copy['__percent'] = df_copy[percent_col].map(parse_percentage)
-                deviations = df_copy[df_copy['__percent'] <= -0.05]
+                deviations = df_copy[(df_copy['__percent'] <= -0.05) | (df_copy['__percent'] >= 0.05)]
                 if not deviations.empty:
                     deviations[percent_col] = deviations['__percent'].map(format_percentage)
                     deviations_data.append(deviations.drop(columns='__percent', errors='ignore'))
@@ -174,7 +173,7 @@ if uploaded_files:
 
     if deviations_data:
         deviations_output = pd.concat(deviations_data, ignore_index=True)
-        st.subheader("Rows with Deviations (PERCENTAGE < -5%)")
+        st.subheader("Rows with Deviations (PERCENTAGE < -5% & > +5%)")
         st.write(deviations_output.head(50))
         deviations_csv = BytesIO()
         deviations_output.to_csv(deviations_csv, index=False)
