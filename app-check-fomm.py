@@ -35,126 +35,112 @@ uploaded_files = st.file_uploader(
     "Upload multiple Excel files", type=["xlsx", "xls"], accept_multiple_files=True
 )
 
-def parse_percentage(val):
-    if pd.isnull(val): return None
-    if isinstance(val, (float, int)): return float(val)
-    s = str(val).replace('%', '').replace(',', '.').strip()
-    try: return float(s) / 100 if '%' in str(val) else float(s)
-    except Exception: return None
-
-def format_percentage(val):
-    if pd.isnull(val): return ""
-    try:
-        percentage = float(val) * 100
-        return f"{percentage:.2f}".replace('.', ',') + '%'
-    except Exception: return ""
-
 def clean_ean(val):
     if pd.isnull(val): return ""
     s = str(val)
     if s.endswith(".0"): s = s[:-2]
     return s.strip()
 
-def get_header_mapping(columns):
-    mapping = {}
-    colmap = {re.sub(r'\W+', '', str(col)).upper(): col for col in columns}
-    possible_cols = {
-        "PO": ["PO"],
-        "EAN CODES": ["EAN CODES", "Ean Codes", "EAN"],
-        "PACKED": ["PACKED"],
-        "ORDERED": ["ORDERED"],
-        "PERCENTAGE": ["PERCENTAGE", "RATIO"],
-    }
-    for canon, variants in possible_cols.items():
-        for var in variants:
-            key = re.sub(r'\W+', '', var).upper()
-            if key in colmap:
-                mapping[canon] = colmap[key]
-                break
-    return mapping
+def get_case_insensitive_column(df, *names):
+    canonical = lambda s: re.sub(r'\W+', '', str(s)).lower()
+    cols_canon = {canonical(c): c for c in df.columns}
+    for n in names:
+        if canonical(n) in cols_canon:
+            return cols_canon[canonical(n)]
+    return None
 
-def preprocess_excel_file_ean_codes(file):
-    try:
-        df = pd.read_excel(file, sheet_name='EAN Codes', header=1)
-        df.dropna(how='all', inplace=True)
-        df.columns = df.columns.str.strip()
-        return {"EAN Codes": df}
-    except Exception as e:
-        return {}
+def combine_packed_columns(df):
+    packed_cols = [col for col in df.columns if "PACKED" in str(col).upper()]
+    if not packed_cols:
+        return df, []
+    main_packed = None
+    for col in packed_cols:
+        if re.sub(r'\W+', '', str(col)).upper() == "PACKED":
+            main_packed = col
+            break
+    if not main_packed:
+        main_packed = packed_cols[0]
+    def fill_packed(row):
+        val = row.get(main_packed, None)
+        if pd.isnull(val) or val in [0, "", "0"]:
+            for col in packed_cols:
+                if col == main_packed: continue
+                alt_val = row.get(col, None)
+                if not pd.isnull(alt_val) and alt_val not in [0, "", "0"]:
+                    return alt_val
+        return val
+    df["PACKED"] = df.apply(fill_packed, axis=1)
+    return df, packed_cols
 
-def improved_preprocess_excel_file(file):
-    xls = pd.ExcelFile(file)
-    processed_sheets = {}
-    for sheet_name in xls.sheet_names:
-        df_raw = xls.parse(sheet_name, header=None)
-        df_raw.dropna(how='all', inplace=True)
-        possible_header_rows = df_raw.apply(
-            lambda row: row.astype(str).str.contains('EAN', case=False, na=False).any(), axis=1
-        )
-        if possible_header_rows.any():
-            header_row_idx = possible_header_rows.idxmax()
-            df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
-            df.dropna(how='all', inplace=True)
-            df.columns = df.columns.str.strip()
-            processed_sheets[sheet_name] = df
-    return processed_sheets
+def try_read_excel(file, sheet_name=None, max_header_row=10):
+    # Read first max_header_row rows as raw data (no header)
+    preview = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=max_header_row)
+    # Search for a row that looks like a header
+    header_row_idx = None
+    for i, row in preview.iterrows():
+        values = [str(val).strip().upper() for val in row.values if not pd.isnull(val)]
+        if any("PO" in v for v in values) and any("EAN" in v for v in values) and any("PACKED" in v for v in values):
+            header_row_idx = i
+            break
+    if header_row_idx is None:
+        # Fallback: use first row (might still be blank but we fail gracefully)
+        header_row_idx = 0
+    # Now read with the detected header row
+    df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            " ".join(
+                [str(lvl) for lvl in tup if str(lvl).strip() != "" and str(lvl).lower() != "nan"]
+            ).strip() for tup in df.columns.values
+        ]
+    df.columns = df.columns.str.strip()
+    return df
 
 if uploaded_files:
     final_data = []
-    deviations_data = []
     for uploaded_file in uploaded_files:
         xls = pd.ExcelFile(uploaded_file)
-        if 'EAN Codes' in xls.sheet_names:
-            sheets_data = preprocess_excel_file_ean_codes(uploaded_file)
-        else:
-            sheets_data = improved_preprocess_excel_file(uploaded_file)
+        sheet_names = xls.sheet_names
+        st.write(f"File: {uploaded_file.name} - Sheets: {sheet_names}")
 
-        for df in sheets_data.values():
-            header_map = get_header_mapping(df.columns)
+        # Prefer 'EAN Codes' if present, otherwise process all sheets
+        sheets_to_try = ['EAN Codes'] if 'EAN Codes' in sheet_names else sheet_names
 
-            # Most flexible: Look for at least EAN and PACKED (with or without PO/ORDERED)
-            ean_col = header_map.get("EAN CODES")
-            packed_col = header_map.get("PACKED")
-            po_col = header_map.get("PO")
-            ordered_col = header_map.get("ORDERED")
+        for sheet in sheets_to_try:
+            df = try_read_excel(uploaded_file, sheet_name=sheet)
+            if df is None:
+                st.warning(f"Sheet '{sheet}': Could not read with any header configuration.")
+                continue
+            st.write(f"Columns in '{sheet}': {list(df.columns)}")
 
-            columns_to_use = []
-            if po_col: columns_to_use.append(po_col)
-            if ean_col: columns_to_use.append(ean_col)
-            if packed_col: columns_to_use.append(packed_col)
+            # Combine packed columns into one
+            df, packed_cols = combine_packed_columns(df)
+            st.write(f"Packed columns found: {packed_cols}")
 
-            # Only process if we have at least EAN and PACKED
-            if ean_col and packed_col:
-                df_filtered = df[columns_to_use].copy()
-                # Exclude rows with no valid PO, if PO exists; else just use EAN as identifier
-                if po_col:
-                    df_filtered = df_filtered[pd.to_numeric(df_filtered[po_col], errors='coerce').notnull()]
-                    df_filtered[po_col] = df_filtered[po_col].astype(int)
-                df_filtered[packed_col] = df_filtered[packed_col].fillna(0).astype(int)
-                df_filtered = df_filtered[df_filtered[packed_col] != 0]
+            # PO and EAN columns (robust matching, including 'EAN CODES' in all caps)
+            po_col = get_case_insensitive_column(df, 'PO')
+            ean_col = get_case_insensitive_column(df, 'EAN', 'Ean Codes', 'EAN CODES', 'EANCODES')
+            if po_col and ean_col and "PACKED" in df.columns:
+                df_filtered = df[[po_col, ean_col, "PACKED"]].copy()
+                df_filtered = df_filtered[
+                    pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
+                    pd.to_numeric(df_filtered["PACKED"], errors='coerce').notnull()
+                ]
+                df_filtered[po_col] = df_filtered[po_col].astype(int)
+                df_filtered["PACKED"] = df_filtered["PACKED"].fillna(0).astype(int)
+                df_filtered = df_filtered[df_filtered["PACKED"] != 0]
                 df_filtered[ean_col] = df_filtered[ean_col].apply(clean_ean)
-                # Rename for consistency
-                col_rename = {}
-                if po_col: col_rename[po_col] = "PO"
-                if ean_col: col_rename[ean_col] = "EAN CODES"
-                if ordered_col: col_rename[ordered_col] = "ORDERED"
-                if packed_col: col_rename[packed_col] = "PACKED"
-                df_filtered = df_filtered.rename(columns=col_rename)
+                df_filtered = df_filtered.rename(columns={po_col: "PO", ean_col: "EAN CODES"})
+                df_filtered = df_filtered[["PO", "EAN CODES", "PACKED"]]
                 final_data.append(df_filtered)
+                st.success(f"Processed {len(df_filtered)} valid rows from sheet '{sheet}'.")
+                break  # Stop after first valid read for this sheet
+            else:
+                st.warning(
+                    f"Sheet '{sheet}' skipped: couldn't find PO, EAN (tried: {po_col}, {ean_col}) and at least one PACKED column."
+                )
 
-            # Deviations
-            percent_col = header_map.get("PERCENTAGE")
-            if percent_col and (po_col or ean_col):
-                df_copy = df.copy()
-                if po_col:
-                    df_copy = df_copy[pd.to_numeric(df_copy[po_col], errors='coerce').notnull()]
-                df_copy['__percent'] = df_copy[percent_col].map(parse_percentage)
-                deviations = df_copy[(df_copy['__percent'] <= -0.05) | (df_copy['__percent'] >= 0.05)]
-                if not deviations.empty:
-                    deviations[percent_col] = deviations['__percent'].map(format_percentage)
-                    deviations_data.append(deviations.drop(columns='__percent', errors='ignore'))
-
-    # Output section
+    # Output download
     if final_data:
         final_output_data = pd.concat(final_data, ignore_index=True)
         st.subheader("Processed Data")
@@ -169,20 +155,4 @@ if uploaded_files:
             mime="text/csv"
         )
     else:
-        st.warning("No valid data found in uploaded files.")
-
-    if deviations_data:
-        deviations_output = pd.concat(deviations_data, ignore_index=True)
-        st.subheader("Rows with Deviations (PERCENTAGE < -5% & > +5%)")
-        st.write(deviations_output.head(50))
-        deviations_csv = BytesIO()
-        deviations_output.to_csv(deviations_csv, index=False)
-        deviations_csv.seek(0)
-        st.download_button(
-            "Download Deviations CSV",
-            data=deviations_csv,
-            file_name="Afwijkende-percentages.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No rows with PERCENTAGE/RATIO below -5% found.")
+        st.warning("No valid data found in uploaded files. Check the column names above.")
