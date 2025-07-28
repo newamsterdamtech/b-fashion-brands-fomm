@@ -49,47 +49,51 @@ def get_case_insensitive_column(df, *names):
             return cols_canon[canonical(n)]
     return None
 
-def combine_packed_columns_flexible(df):
-    known_nonpacked = [
-        'difference', 'ratio', 'ordered', 'po', 'ean', 'style', 'color', 'description', 'size'
-    ]
-    packed_cols = [
-        col for col in df.columns
-        if all(key not in str(col).lower() for key in known_nonpacked)
-    ]
+def find_packed_cols(df):
+    """Finds columns whose names include 'PACKED', 'VESSEL', or 'AIR' (case-insensitive)."""
+    pattern = re.compile(r'(PACKED|VESSEL|AIR)', re.IGNORECASE)
+    packed_cols = [col for col in df.columns if pattern.search(str(col))]
+    return packed_cols
+
+def combine_packed_columns(df, packed_cols):
+    """Combines found packed/vessel/air columns into a single PACKED column."""
     if not packed_cols:
-        return df, []
+        return df
+    # Pick first as main, fill from others if main is null/0
     main_packed = packed_cols[0]
     def fill_packed(row):
         val = row.get(main_packed, None)
         if pd.isnull(val) or val in [0, "", "0"]:
             for col in packed_cols:
+                if col == main_packed: continue
                 alt_val = row.get(col, None)
                 if not pd.isnull(alt_val) and alt_val not in [0, "", "0"]:
                     return alt_val
         return val
     df["PACKED"] = df.apply(fill_packed, axis=1)
-    return df, packed_cols
+    return df
 
-def smart_header_row_detection(file, sheet_name=None, max_header_row=15):
-    # Scan first N rows to find likely header row
+def try_read_excel(file, sheet_name=None, max_header_row=10):
+    # Read preview
     preview = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=max_header_row)
+    # Search for a row that has PO, EAN, and any packed col
     header_row_idx = None
+    packed_pat = re.compile(r'(PACKED|VESSEL|AIR)', re.IGNORECASE)
     for i, row in preview.iterrows():
         values = [str(val).strip().upper() for val in row.values if not pd.isnull(val)]
-        if (
-            any("PO" in v for v in values) and
-            any("EAN" in v for v in values) and
-            len(values) > 2  # at least PO, EAN, and something else
-        ):
+        if any("PO" in v for v in values) and any("EAN" in v for v in values) and any(packed_pat.search(v) for v in values):
             header_row_idx = i
             break
     if header_row_idx is None:
-        st.warning(f"Could not detect header row for sheet '{sheet_name}'. Using first row as fallback.")
+        # fallback
         header_row_idx = 0
-    # Read again with the detected header row
     df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
-    df.columns = [str(c).strip() for c in df.columns]
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            " ".join([str(lvl) for lvl in tup if str(lvl).strip() != "" and str(lvl).lower() != "nan"]).strip() 
+            for tup in df.columns.values
+        ]
+    df.columns = df.columns.str.strip()
     return df
 
 if uploaded_files:
@@ -99,19 +103,26 @@ if uploaded_files:
         sheet_names = xls.sheet_names
         st.write(f"File: {uploaded_file.name} - Sheets: {sheet_names}")
 
+        # Prefer 'EAN Codes' if present, else all sheets
         sheets_to_try = ['EAN Codes'] if 'EAN Codes' in sheet_names else sheet_names
 
         for sheet in sheets_to_try:
-            df = smart_header_row_detection(uploaded_file, sheet_name=sheet)
+            df = try_read_excel(uploaded_file, sheet_name=sheet)
+            if df is None:
+                st.warning(f"Sheet '{sheet}': Could not read with any header configuration.")
+                continue
             st.write(f"Columns in '{sheet}': {list(df.columns)}")
 
-            df, packed_cols = combine_packed_columns_flexible(df)
-            st.write(f"Packed columns detected (using flexible logic): {packed_cols}")
+            packed_cols = find_packed_cols(df)
+            st.write(f"Packed columns found (incl. VESSEL/AIR): {packed_cols}")
 
             po_col = get_case_insensitive_column(df, 'PO')
             ean_col = get_case_insensitive_column(df, 'EAN', 'Ean Codes', 'EAN CODES', 'EANCODES')
-            if po_col and ean_col and "PACKED" in df.columns:
+
+            if po_col and ean_col and packed_cols:
+                df = combine_packed_columns(df, packed_cols)
                 df_filtered = df[[po_col, ean_col, "PACKED"]].copy()
+                # Numeric and not null
                 df_filtered = df_filtered[
                     pd.to_numeric(df_filtered[po_col], errors='coerce').notnull() &
                     pd.to_numeric(df_filtered["PACKED"], errors='coerce').notnull()
@@ -124,12 +135,13 @@ if uploaded_files:
                 df_filtered = df_filtered[["PO", "EAN CODES", "PACKED"]]
                 final_data.append(df_filtered)
                 st.success(f"Processed {len(df_filtered)} valid rows from sheet '{sheet}'.")
-                break
+                break  # Stop after first valid read for this sheet
             else:
                 st.warning(
-                    f"Sheet '{sheet}' skipped: couldn't find PO, EAN (tried: {po_col}, {ean_col}) and at least one packed column."
+                    f"Sheet '{sheet}' skipped: couldn't find PO, EAN (tried: {po_col}, {ean_col}) and at least one PACKED/VESSEL/AIR column."
                 )
 
+    # Output download
     if final_data:
         final_output_data = pd.concat(final_data, ignore_index=True)
         st.subheader("Processed Data")
