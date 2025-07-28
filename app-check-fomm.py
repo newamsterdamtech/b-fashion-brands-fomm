@@ -50,8 +50,9 @@ def get_case_insensitive_column(df, *names):
     return None
 
 def combine_packed_columns_flexible(df):
-    # Exclude known non-packed columns
-    known_nonpacked = ['difference', 'ratio', 'ordered', 'po', 'ean', 'style', 'color', 'description', 'size']
+    known_nonpacked = [
+        'difference', 'ratio', 'ordered', 'po', 'ean', 'style', 'color', 'description', 'size'
+    ]
     packed_cols = [
         col for col in df.columns
         if all(key not in str(col).lower() for key in known_nonpacked)
@@ -70,29 +71,25 @@ def combine_packed_columns_flexible(df):
     df["PACKED"] = df.apply(fill_packed, axis=1)
     return df, packed_cols
 
-
-def try_read_excel(file, sheet_name=None, max_header_row=10):
-    # Read first max_header_row rows as raw data (no header)
+def smart_header_row_detection(file, sheet_name=None, max_header_row=15):
+    # Scan first N rows to find likely header row
     preview = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=max_header_row)
-    # Search for a row that looks like a header
     header_row_idx = None
     for i, row in preview.iterrows():
         values = [str(val).strip().upper() for val in row.values if not pd.isnull(val)]
-        if any("PO" in v for v in values) and any("EAN" in v for v in values) and any("PACKED" in v for v in values):
+        if (
+            any("PO" in v for v in values) and
+            any("EAN" in v for v in values) and
+            len(values) > 2  # at least PO, EAN, and something else
+        ):
             header_row_idx = i
             break
     if header_row_idx is None:
-        # Fallback: use first row (might still be blank but we fail gracefully)
+        st.warning(f"Could not detect header row for sheet '{sheet_name}'. Using first row as fallback.")
         header_row_idx = 0
-    # Now read with the detected header row
+    # Read again with the detected header row
     df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [
-            " ".join(
-                [str(lvl) for lvl in tup if str(lvl).strip() != "" and str(lvl).lower() != "nan"]
-            ).strip() for tup in df.columns.values
-        ]
-    df.columns = df.columns.str.strip()
+    df.columns = [str(c).strip() for c in df.columns]
     return df
 
 if uploaded_files:
@@ -102,21 +99,15 @@ if uploaded_files:
         sheet_names = xls.sheet_names
         st.write(f"File: {uploaded_file.name} - Sheets: {sheet_names}")
 
-        # Prefer 'EAN Codes' if present, otherwise process all sheets
         sheets_to_try = ['EAN Codes'] if 'EAN Codes' in sheet_names else sheet_names
 
         for sheet in sheets_to_try:
-            df = try_read_excel(uploaded_file, sheet_name=sheet)
-            if df is None:
-                st.warning(f"Sheet '{sheet}': Could not read with any header configuration.")
-                continue
+            df = smart_header_row_detection(uploaded_file, sheet_name=sheet)
             st.write(f"Columns in '{sheet}': {list(df.columns)}")
 
-            # Combine packed columns into one
             df, packed_cols = combine_packed_columns_flexible(df)
-            st.write(f"Packed columns found: {packed_cols}")
+            st.write(f"Packed columns detected (using flexible logic): {packed_cols}")
 
-            # PO and EAN columns (robust matching, including 'EAN CODES' in all caps)
             po_col = get_case_insensitive_column(df, 'PO')
             ean_col = get_case_insensitive_column(df, 'EAN', 'Ean Codes', 'EAN CODES', 'EANCODES')
             if po_col and ean_col and "PACKED" in df.columns:
@@ -133,13 +124,12 @@ if uploaded_files:
                 df_filtered = df_filtered[["PO", "EAN CODES", "PACKED"]]
                 final_data.append(df_filtered)
                 st.success(f"Processed {len(df_filtered)} valid rows from sheet '{sheet}'.")
-                break  # Stop after first valid read for this sheet
+                break
             else:
                 st.warning(
-                    f"Sheet '{sheet}' skipped: couldn't find PO, EAN (tried: {po_col}, {ean_col}) and at least one PACKED column."
+                    f"Sheet '{sheet}' skipped: couldn't find PO, EAN (tried: {po_col}, {ean_col}) and at least one packed column."
                 )
 
-    # Output download
     if final_data:
         final_output_data = pd.concat(final_data, ignore_index=True)
         st.subheader("Processed Data")
