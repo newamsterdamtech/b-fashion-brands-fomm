@@ -49,28 +49,27 @@ def get_case_insensitive_column(df, *names):
             return cols_canon[canonical(n)]
     return None
 
-def combine_packed_columns(df):
-    packed_cols = [col for col in df.columns if "PACKED" in str(col).upper()]
+def combine_packed_columns_flexible(df):
+    # Exclude known non-packed columns
+    known_nonpacked = ['difference', 'ratio', 'ordered', 'po', 'ean', 'style', 'color', 'description', 'size']
+    packed_cols = [
+        col for col in df.columns
+        if all(key not in str(col).lower() for key in known_nonpacked)
+    ]
     if not packed_cols:
         return df, []
-    main_packed = None
-    for col in packed_cols:
-        if re.sub(r'\W+', '', str(col)).upper() == "PACKED":
-            main_packed = col
-            break
-    if not main_packed:
-        main_packed = packed_cols[0]
+    main_packed = packed_cols[0]
     def fill_packed(row):
         val = row.get(main_packed, None)
         if pd.isnull(val) or val in [0, "", "0"]:
             for col in packed_cols:
-                if col == main_packed: continue
                 alt_val = row.get(col, None)
                 if not pd.isnull(alt_val) and alt_val not in [0, "", "0"]:
                     return alt_val
         return val
     df["PACKED"] = df.apply(fill_packed, axis=1)
     return df, packed_cols
+
 
 def try_read_excel(file, sheet_name=None, max_header_row=10):
     # Read first max_header_row rows as raw data (no header)
@@ -114,7 +113,7 @@ if uploaded_files:
             st.write(f"Columns in '{sheet}': {list(df.columns)}")
 
             # Combine packed columns into one
-            df, packed_cols = combine_packed_columns(df)
+            df, packed_cols = combine_packed_columns_flexible(df)
             st.write(f"Packed columns found: {packed_cols}")
 
             # PO and EAN columns (robust matching, including 'EAN CODES' in all caps)
